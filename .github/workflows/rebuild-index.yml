@@ -1,0 +1,63 @@
+# Rebuild the pip package index (GitHub Pages) from this repo's pypi/<package> releases.
+#
+# Goes in the python-index repo as .github/workflows/rebuild-index.yml, with
+# build_github_index.py and github_releases.py in tools/ on the main branch.
+# The published site lives on the gh-pages branch (GitHub Pages: deploy from
+# branch gh-pages, root). Its hashes.json keeps every file's SHA-256, so only
+# new files are downloaded to hash them.
+#
+# Runs when a package repo's publish workflow asks for it (repository_dispatch),
+# when a release is published or deleted here, or by hand (Actions tab).
+
+name: Rebuild package index
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [package-published]
+  release:
+    types: [published, deleted]
+
+permissions:
+  contents: write   # push to gh-pages; read releases
+
+concurrency:
+  group: rebuild-index   # one rebuild at a time; a queued run covers everything published meanwhile
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tools (main branch)
+        uses: actions/checkout@v4
+        with:
+          path: main
+
+      - name: Check out the published site (gh-pages branch)
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: site
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild the index pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python main/tools/build_github_index.py --github-repo "${{ github.repository }}" --site-dir site
+
+      - name: Publish to gh-pages
+        working-directory: site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Index unchanged"
+            exit 0
+          fi
+          git commit -m "Rebuild index (${{ github.event_name }})"
+          git push

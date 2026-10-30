@@ -1,0 +1,79 @@
+# Publish this repo's Python package(s) to the organization's GitHub package index.
+#
+# Goes in each package repo as .github/workflows/publish-to-python-index.yml.
+# Push a version tag (e.g. v3.2.0) to publish; or run it by hand from the
+# Actions tab.
+#
+# Needs a secret PYTHON_INDEX_TOKEN (org or repo secret): a token that may
+# create releases in the python-index repo, e.g. a fine-grained token with
+# "Contents: Read and write" on python-index only, or a GitHub App token.
+# The default GITHUB_TOKEN can't write to another repo.
+#
+# Files are uploaded to the release pypi/<package> in python-index (created for
+# a new package). A file name that's already there is refused, so a published
+# version can't be replaced. Then python-index is asked to rebuild its pages.
+
+name: Publish to Python index
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  INDEX_REPO: InstituteforDiseaseModeling/python-index
+  # Folders with a pyproject.toml or setup.py to build, separated by spaces.
+  # "." for a single package; e.g. "idmtools_core idmtools_models" for several.
+  PACKAGE_DIRS: "."
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade build
+          for dir in $PACKAGE_DIRS; do
+            python -m build --outdir dist "$dir"
+          done
+          ls -l dist
+
+      - name: Upload to the index's releases
+        env:
+          GH_TOKEN: ${{ secrets.PYTHON_INDEX_TOKEN }}
+        shell: python
+        run: |
+          import glob, os, re, subprocess, sys
+
+          repo = os.environ["INDEX_REPO"]
+          files = sorted(glob.glob("dist/*.whl") + glob.glob("dist/*.tar.gz"))
+          if not files:
+              sys.exit("No package files in dist/")
+
+          # Group files by normalized package name: one release per package
+          groups = {}
+          for path in files:
+              base = os.path.basename(path)
+              name = base[:-4].split("-")[0] if base.endswith(".whl") else base[:-len(".tar.gz")].rsplit("-", 1)[0]
+              groups.setdefault(re.sub(r"[-_.]+", "-", name).lower(), []).append(path)
+
+          for pkg, paths in sorted(groups.items()):
+              tag = f"pypi/{pkg}"
+              exists = subprocess.run(["gh", "release", "view", tag, "-R", repo], capture_output=True).returncode == 0
+              if not exists:
+                  subprocess.run(["gh", "release", "create", tag, "-R", repo, "--title", tag,
+                                  "--notes", f"Python package {pkg}"], check=True)
+              # No --clobber: uploading a file name that already exists fails, so versions can't be replaced
+              subprocess.run(["gh", "release", "upload", tag, *paths, "-R", repo], check=True)
+              print(f"Uploaded {len(paths)} files to {repo} release {tag}")
+
+      - name: Rebuild the index
+        env:
+          GH_TOKEN: ${{ secrets.PYTHON_INDEX_TOKEN }}
+        run: gh api "repos/$INDEX_REPO/dispatches" -f event_type=package-published
