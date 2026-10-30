@@ -1,9 +1,0 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
-
-# Created when running the migration scripts locally
-downloads/
-github-index/
-*_log.csv
